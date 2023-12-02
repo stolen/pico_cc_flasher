@@ -1,18 +1,39 @@
 import rp2pio
 import adafruit_pioasm
-import array
+from array import array
 import board
+import time
 
 SM_DEBUG_INIT   = 1
 SM_DEBUG_CMD    = 2
 
 sm = None
 loaded_sm = None
+debug_inited = False
 
-pinDD  = board.GP20
+pinDD  = board.GP27
 # DC and RST must be consecutive because they are set by pio side-set
-pinDC  = board.GP21
-pinRST = board.GP20
+pinDC  = board.GP28
+pinRST = board.GP29
+
+# 1) Pull RESET_N low
+# 2) Toggle two negative flanks on the DC line
+# 3) Pull RESET_N high
+debug_init_asm = """
+.program init_dbg
+.side_set 2 opt
+    set pins, 0     side 0  [3]     ; RST low, DC low
+
+    set pindirs, 1  side 1          ; DC flank 1
+    nop             side 0  [2]
+
+    nop             side 1          ; DC flank 2
+    nop             side 0  [3]
+
+    nop             side 2          ; RST high
+"""
+debug_init_compiled = adafruit_pioasm.assemble(debug_init_asm)
+
 
 # Debug commands
 #
@@ -31,12 +52,12 @@ pinRST = board.GP20
 # Every command fits into 32-bit word
 debug_command_asm = """
 .program debug_command
-.side_set 2
-start:
-    pull                side 2      ; wait for next command, ensure clock low
+.side_set 2 opt
+.wrap_target
+    pull                            ; wait for next command, ensure clock low
 
-    mov y osr           side 2
-    jmp !y wait_ready   side 2      ; if input word is NULL, just read one more byte
+    mov y osr                       ; store command in Y
+    jmp !y just_read_byte           ; if command is zero, just receive byte
 
     set pindirs 1       side 2      ; DD output
     set y 5                         ; just send first 6 bits (MSb)
@@ -67,81 +88,60 @@ data_bit:
 wait_ready:
     set pindirs 0       side 2      ; DD input next instruction after clock low
 read_byte:
+    mov isr null
+    in pins, 1
+    mov x, isr          side 2      ; X stores DUP non-readiness before this strobe
+just_read_byte:
     set y 7             side 2      ; 8 bits
 read_bit:
     nop                 side 3  [1] ; DUP sets bit at rising clock edge, let it settle
     in pins, 1          side 2      ; read at falling clock edge
     jmp y-- read_bit    side 2
 
-    nop                 side 2  [3]
-    jmp pin read_byte   side 2      ; while pin is high, read one more byte
-
+    jmp x-- read_byte   side 2      ; if DUP was not ready (DD high), read next byte
     push                side 2
-    jmp start           side 2
+.wrap
+
 """
 # Tdir_change is 83 ns, ~0.1us -- may use any speed because 4 ticks are always more
-debug_command_compiled = adafruit_pioasm.assemble(debug_command_asm)
+debug_command_prog = adafruit_pioasm.Program(debug_command_asm)
 
 
-ping_asm = """
-.program ping
-.side_set 2
-start:
-    nop     side 3
-    pull    side 2
-    mov isr osr side 3
-    push    side 2
-    jmp start
-"""
-ping_compiled = adafruit_pioasm.assemble(ping_asm)
-
-test_asm = """
-.program test
-.side_set 2
-start:
-    set pins, 1     side 3
-    set pins, 0     side 0
-    jmp start
-"""
-test_compiled = adafruit_pioasm.assemble(test_asm)
-
-test2_asm = """
-.program test
-.side_set 2
-    set pindirs, 1      side 1
-start:
-    set pins, 1         side 2
-    set pins, 0         side 3
-    jmp start           side 0
-"""
-test2_compiled = adafruit_pioasm.assemble(test2_asm)
-
-def ensure_sm(sm_id, compiled):
+def ensure_sm(sm_id, prog):
     global loaded_sm, sm
     global pinRST, pinDD, pinDC
+
     if loaded_sm == sm_id:
         return loaded_sm
-    sm = rp2pio.StateMachine(
-        compiled,
+    if sm:
+        abort_sm()
+
+    sm = start_new_sm(prog)
+    loaded_sm = sm_id
+    return loaded_sm
+
+
+def start_new_sm(prog):
+    new_sm = rp2pio.StateMachine(
+        prog.assembled,
         frequency = 25*1000,
+        exclusive_pin_use = False,
 
         first_set_pin = pinDD,
-        #initial_set_pin_direction = 0,
+        initial_set_pin_direction = 0,
 
         first_out_pin = pinDD,
         out_pin_count = 1,
-        #initial_out_pin_direction = 0,   # for pull-up
-        #initial_out_pin_state = 0,
+        initial_out_pin_direction = 0,   # for pull-up
+        initial_out_pin_state = 0,
 
         first_in_pin = pinDD,
-        #in_pin_count = 1,
-        #pull_in_pin_up = True,
+        in_pin_count = 1,
+        pull_in_pin_up = True,
 
         jmp_pin = pinDD,
 
-        sideset_enable = False,             # This really means 'sideset_optional' -- extra bit
         first_sideset_pin = pinDC,          # second is pinRST
-        sideset_pin_count = 2,
         initial_sideset_pin_state = 2,      # DC low, RST high
         initial_sideset_pin_direction = 0x1f,
 
@@ -150,6 +150,49 @@ def ensure_sm(sm_id, compiled):
         out_shift_right = False,
         in_shift_right = False,
 
-        user_interruptible = True
-    )
+        user_interruptible = True,
 
+        **prog.pio_kwargs
+    )
+    return new_sm
+
+def abort_sm():
+    global sm, loaded_sm
+    if sm:
+        sm.stop()
+        sm.deinit()
+        sm = None
+    loaded_sm = None
+
+
+
+def debug_init():
+    global sm
+    # perform debug_init sequence
+    for i in range(len(debug_init_compiled)):
+        sm.run(debug_init_compiled[i:i+1])
+
+    # read ChipID
+    chip_id = debug_command(0x68000000)
+    chip_rev = debug_command(0)
+    return (chip_id, chip_rev)
+
+
+def debug_command(cmd):
+    global sm
+
+    buf = array("L", [cmd])
+
+    sm.clear_rxfifo()
+    sm.background_write(buf)
+    started_at = time.monotonic_ns()
+    while sm.in_waiting == 0:
+        if time.monotonic_ns() - started_at > 30_000_000_000: # 30 seconds
+            sm.clear_txstall()
+            sm.restart()
+            return None
+    sm.readinto(buf)
+    return (buf[0] & 0xff)
+
+
+ensure_sm(SM_DEBUG_CMD, debug_command_prog)
