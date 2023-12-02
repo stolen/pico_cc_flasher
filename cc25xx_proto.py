@@ -16,6 +16,12 @@ pinDD  = board.GP27
 pinDC  = board.GP28
 pinRST = board.GP29
 
+ADDR_BUF0                 = 0x0000 # Buffer (512 bytes)
+ADDR_DMA_DESC_0           = 0x0200 # DMA descriptors (8 bytes)
+ADDR_DMA_DESC_1           = (ADDR_DMA_DESC_0 + 8)
+CH_DBG_TO_BUF0            = 0x01   # Channel 0
+CH_BUF0_TO_FLASH          = 0x02   # Channel 1
+
 # DUP registers (XDATA space address)
 DUP_DBGDATA               = 0x6260  #  Debug interface data buffer
 DUP_FCTL                  = 0x6270  #  Flash controller
@@ -30,6 +36,11 @@ DUP_DMA1CFGH              = 0x70D3  #  Hi byte , DMA config ch. 1
 DUP_DMA0CFGL              = 0x70D4  #  Low byte, DMA config ch. 0
 DUP_DMA0CFGH              = 0x70D5  #  Low byte, DMA config ch. 0
 DUP_DMAARM                = 0x70D6  #  DMA arming register
+
+def HIBYTE(addr):
+    return (addr >> 8) & 0xff
+def LOBYTE(addr):
+    return addr & 0xff
 
 
 # 1) Pull RESET_N low
@@ -70,55 +81,62 @@ debug_command_asm = """
 .program debug_command
 .side_set 2 opt
 .wrap_target
+next_command:
     pull                            ; wait for next command, ensure clock low
 
-    mov y osr                       ; store command in Y
-    jmp !y read_byte           ; if command is zero, just receive byte
+    out x, 16          side 2       ; number of bytes to write
+    mov isr osr                     ; keep read commands safe
 
+    jmp x-- write_data     
+    jmp write_done           
+
+write_data:
     set pindirs 1       side 2      ; DD output
-    set y 5                         ; just send first 6 bits (MSb)
-cmd6_cont:
-    mov isr null        side 2  [0] ; compensate for LSb processing while resetting ISR
-    out pins, 1         side 3  [1] ; set data bit, clock high
-    jmp y-- cmd6_cont   side 2      ; clock low
-
-    out x, 1            side 2      ; X = CMD_bit1
-    in x, 1             side 2      ; ISR = CMD_bit1
-    mov pins x          side 3      ; DD = X, clock high
-
-    out x, 1                        ; X = CMD_bit0, clock low
-    in x, 1             side 2  [1] ; ISR = [...... CMD_bit1 CMD_bit0]
-    mov pins x          side 3  [1] ; DD = X, clock high
-    mov x isr           side 2  [0] ; X is lower 2 bits of command = number of data bytes, clock low
-
-data_byte:
-    jmp !x wait_ready   side 2      ; X = 0 means no more data to send; clock low
-    set y 6             side 2  [1] ; 7 data bits are just sent
-data_bit:
+    pull                            ; payload is in following words
+write_byte:
+    pull ifempty      
+    set y 7                         ; 
+write_bit:
     out pins, 1         side 3      ; set data bit, clock high
-    jmp y-- data_bit    side 2  [2] ; clock low and move to next bit (if any)
+    jmp y-- write_bit   side 2      ; clock low
+    jmp x-- write_byte
 
-    out pins, 1         side 3      ; set last data bit, clock high
-    jmp x-- data_byte   side 3      ; X is always non-zero, decrement and jump
+    set pindirs 0                   ; DD input
+    mov osr isr                     ; restore read commands
 
-wait_ready:
-    set pindirs 0       side 2  [3] ; DD input next instruction after clock low
+write_done:
+    out x, 8                        ; X = 0 -> don't wait
+                                    ; X = 1 -> wait ready
+
+wait_ready:                         ; drop byte until X = 0
+    jmp !x wait_done
+
+    set y 7                         ; 
+drop_bit:
+    nop                 side 3
+    jmp y-- drop_bit    side 2
+
+    mov isr null                    ; ISR = 0
+    in pins, 1                      ; ISR = DD
+    mov x isr                       ; X = ISR -> X = DD
+    jmp wait_ready
+
+wait_done:
+    out x, 8                        ; number of bytes to read
+    jmp x-- read_byte
+    jmp command_done
+
 read_byte:
-    mov isr null
-    in pins, 1
-    ; mov x, isr          side 2      ; X stores DUP non-readiness before this strobe
-just_read_byte:
-    set y 6             side 2      ; 7 bits
+    set y 7             side 2      ; 8 bits
 read_bit:
-    nop                 side 3  [1] ; DUP sets bit at rising clock edge, let it settle
+    nop                 side 3 [2]  ; DUP sets bit at rising clock edge, let it settle
     in pins, 1          side 2      ; read at falling clock edge
-    jmp y-- read_bit    side 3
+    jmp y-- read_bit 
 
-    nop                         [1]
-    in pins, 1          side 2      ; read at falling clock edge
+    jmp x-- read_byte
 
-    ; jmp x-- read_byte   side 2      ; if DUP was not ready (DD high), read next byte
-    push                side 2
+command_done:
+    push
 .wrap
 
 """
@@ -143,7 +161,8 @@ def ensure_sm(sm_id, prog):
 def start_new_sm(prog):
     new_sm = rp2pio.StateMachine(
         prog.assembled,
-        frequency = 25*1000_000,    # seems like RP2040 cannot switch output to input faster.
+        #frequency = 25*1000,
+        frequency = 25*1000_000,    # seems like RP2040 cannot sample fast enough
                                     # Maybe with second input-only pin on DD reads will be more reliable
                                     # 25 MHz clock   --  ~8 Mbps bitrate
         exclusive_pin_use = False,
@@ -207,12 +226,10 @@ def read_chip_id():
     global sm
     sm.clear_rxfifo()
 
-    buf = array("L", [0x68000000])
+    buf = array("L", [0x0001_00_02, 0x68000000])
     # read ChipID
-    sm.background_write(buf); sm.readinto(buf)
-    chip_id = buf[0] & 0xff
-
-    buf[0] = 0; sm.background_write(buf); sm.readinto(buf)
+    sm.background_write(buf); sm.readinto(buf, end=1)
+    chip_id = (buf[0] >> 8) & 0xff
     chip_rev = buf[0] & 0xff
 
     if chip_id == 0xA5:
@@ -236,19 +253,14 @@ def read_chip_id():
 def debug_command(cmd):
     global sm
 
-    wbuf = array("L", [cmd])
-    rbuf = array("L", [0x100])
+    control = ((cmd >> 8) & 0x0003_0000) + 0x0001_01_01
+    buf = array("L", [control, cmd])
 
     sm.clear_rxfifo()
-    sm.background_write(wbuf)
-    sm.readinto(rbuf)
+    sm.background_write(buf)
+    sm.readinto(buf, end=1)
 
-    # repeat reads until DUP is ready before read
-    wbuf[0] = 0
-    while (rbuf[0] >> 8):
-        sm.background_write(wbuf)
-        sm.readinto(rbuf)
-    return rbuf[0] & 0xff
+    return buf[0] & 0xff
 
 
 ensure_sm(SM_DEBUG_CMD, debug_command_prog)
@@ -258,7 +270,7 @@ ensure_sm(SM_DEBUG_CMD, debug_command_prog)
 def write_xdata_memory(address, value):
     # MOV DPTR, address
     debug_command(0x57_90_0000 | (address & 0xffff))
-    # MOV A, values[i]
+    # MOV A, value
     debug_command(0x56_74_0000 | ((value & 0xff) << 8))
     # MOV @DPTR, A
     debug_command(0x55_F0_0000)
@@ -267,7 +279,40 @@ def read_xdata_memory(address):
     # MOV DPTR, address
     debug_command(0x57_90_0000 | (address & 0xffff))
     # MOVX A, @DPTR
-    return debug_command(0x55_E0_0000);
+    return debug_command(0x55_E0_0000)
+
+def write_xdata_memory_block(address, values):
+    # MOV DPTR, address
+    debug_command(0x57_90_0000 | (address & 0xffff))
+
+    for i in range(len(values)):
+        # MOV A, values[i]
+        debug_command(0x56_74_0000 | ((values[i] & 0xff) << 8))
+        # MOV @DPTR, A
+        debug_command(0x55_F0_0000)
+        # INC DPTR
+        debug_command(0x55_A3_0000)
+
+
+def burst_write_block(buffer):
+    global sm
+
+    # Send command (no wait, no ack)
+    control = 0x0002_00_00
+    cmd = (0x8000 | len(buffer)) << 16
+    buf = array("L", [control, cmd])
+    sm.background_write(buf)
+    sm.readinto(buf, end=1)
+
+    # Send data (with ack)
+    control = (len(buffer) << 16) | 0x0101
+    buf = array("L", [control])
+    sm.background_write(buf)
+    for i in range(0, len(buffer), 4):
+        buf[0] = int.from_bytes(buffer[i:i+4], 'big')
+        sm.background_write(buf)
+    sm.readinto(buf, end=1)
+    return buf[0] & 0xff
 
 
 
@@ -278,8 +323,68 @@ def read_flash_memory_block(address, buffer):
     debug_command(0x57_90_0000 | 0x8000 | (address & 0x7fff))
     for i in range(len(buffer)):
         # 3. MOVX A, @DPTR
-        buffer[i] = debug_command(0x55_E0_0000);
+        buffer[i] = debug_command(0x55_E0_0000)
         # 4. INC DPTR
-        debug_command(0x55_A3_0000);
+        debug_command(0x55_A3_0000)
  
 
+def prepare_for_writing():
+    print("status before erase", end='  ');  print("%02X" % (debug_command(0x30_000000)) )
+    debug_command(0x10_000000)          # CMD_CHIP_ERASE
+    print("Waiting for erase end", end='')
+    while (debug_command(0x30_000000) & 0x80):
+        time.sleep(0.5)
+        print(".", end='')
+        # wait for STATUS_CHIP_ERASE_BUSY_BM flag go low in CMD_READ_STATUS
+        pass
+    print("\nEnablind DMA")
+    debug_command(0x19_22_0000)         # enable DMA: CMD_WR_CONFIG 0x22
+
+
+#**************************************************************************//**
+# @brief    Writes 4-2048 bytes to DUP's flash memory.
+#
+# @param    address     FLASH memory start address [0x0000 - 0x7FFF]
+# @param    buffer      source buffer
+#*****************************************************************************/
+def write_flash_memory_block(address, buffer):
+    # 1. Write the 2 DMA descriptors to RAM
+    dma_desc_0 = bytes([
+        HIBYTE(DUP_DBGDATA), LOBYTE(DUP_DBGDATA),
+        HIBYTE(ADDR_BUF0),   LOBYTE(ADDR_BUF0),
+        0, 0, 31, 0x11 ])
+    dma_desc_1 = bytes([
+        HIBYTE(ADDR_BUF0),   LOBYTE(ADDR_BUF0),
+        HIBYTE(DUP_FWDATA),  LOBYTE(DUP_FWDATA),
+        0, 0, 18, 0x42 ])
+
+    write_xdata_memory_block(ADDR_DMA_DESC_0, dma_desc_0);
+    write_xdata_memory_block(ADDR_DMA_DESC_1, dma_desc_1);
+
+    # 2. Update LEN value in DUP's DMA descriptors
+    buflen = len(buffer)
+    buflen = [LOBYTE(buflen), HIBYTE(buflen)]
+    write_xdata_memory_block((ADDR_DMA_DESC_0+4), buflen)   # LEN, DBG => ram
+    write_xdata_memory_block((ADDR_DMA_DESC_1+4), buflen)   # LEN, ram => flash
+
+    # 3. Set DMA controller pointer to the DMA descriptors
+    write_xdata_memory(DUP_DMA0CFGH, HIBYTE(ADDR_DMA_DESC_0))
+    write_xdata_memory(DUP_DMA0CFGL, LOBYTE(ADDR_DMA_DESC_0))
+    write_xdata_memory(DUP_DMA1CFGH, HIBYTE(ADDR_DMA_DESC_1))
+    write_xdata_memory(DUP_DMA1CFGL, LOBYTE(ADDR_DMA_DESC_1))
+
+    # 4. Set Flash controller start address (wants 16MSb of 18 bit address)
+    write_xdata_memory(DUP_FADDRH, HIBYTE( (address >> 2) ))
+    write_xdata_memory(DUP_FADDRL, LOBYTE( (address >> 2) ))
+
+    # 5. Arm DBG=>buffer DMA channel and start burst write
+    write_xdata_memory(DUP_DMAARM, CH_DBG_TO_BUF0)
+    burst_write_block(buffer)
+
+    # 6. Start programming: buffer to flash
+    write_xdata_memory(DUP_DMAARM, CH_BUF0_TO_FLASH)
+    write_xdata_memory(DUP_FCTL, 0x06)
+
+    # 7. Wait until flash controller is done
+    while (read_xdata_memory(DUP_FCTL) & 0x80):
+        pass
