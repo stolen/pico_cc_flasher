@@ -57,22 +57,22 @@ debug_command_asm = """
     pull                            ; wait for next command, ensure clock low
 
     mov y osr                       ; store command in Y
-    jmp !y just_read_byte           ; if command is zero, just receive byte
+    jmp !y read_byte           ; if command is zero, just receive byte
 
     set pindirs 1       side 2      ; DD output
     set y 5                         ; just send first 6 bits (MSb)
 cmd6_cont:
-    mov isr null        side 2  [1] ; compensate for LSb processing while resetting ISR
-    out pins, 1         side 3      ; set data bit, clock high
+    mov isr null        side 2  [0] ; compensate for LSb processing while resetting ISR
+    out pins, 1         side 3  [1] ; set data bit, clock high
     jmp y-- cmd6_cont   side 2      ; clock low
 
     out x, 1            side 2      ; X = CMD_bit1
     in x, 1             side 2      ; ISR = CMD_bit1
     mov pins x          side 3      ; DD = X, clock high
 
-    out x, 1            side 2      ; X = CMD_bit0, clock low
+    out x, 1                        ; X = CMD_bit0, clock low
     in x, 1             side 2  [1] ; ISR = [...... CMD_bit1 CMD_bit0]
-    mov pins x          side 3      ; DD = X, clock high
+    mov pins x          side 3  [1] ; DD = X, clock high
     mov x isr           side 2  [0] ; X is lower 2 bits of command = number of data bytes, clock low
 
 data_byte:
@@ -86,19 +86,22 @@ data_bit:
     jmp x-- data_byte   side 3      ; X is always non-zero, decrement and jump
 
 wait_ready:
-    set pindirs 0       side 2      ; DD input next instruction after clock low
+    set pindirs 0       side 2  [3] ; DD input next instruction after clock low
 read_byte:
     mov isr null
     in pins, 1
-    mov x, isr          side 2      ; X stores DUP non-readiness before this strobe
+    ; mov x, isr          side 2      ; X stores DUP non-readiness before this strobe
 just_read_byte:
-    set y 7             side 2      ; 8 bits
+    set y 6             side 2      ; 7 bits
 read_bit:
     nop                 side 3  [1] ; DUP sets bit at rising clock edge, let it settle
     in pins, 1          side 2      ; read at falling clock edge
-    jmp y-- read_bit    side 2
+    jmp y-- read_bit    side 3
 
-    jmp x-- read_byte   side 2      ; if DUP was not ready (DD high), read next byte
+    nop                         [1]
+    in pins, 1          side 2      ; read at falling clock edge
+
+    ; jmp x-- read_byte   side 2      ; if DUP was not ready (DD high), read next byte
     push                side 2
 .wrap
 
@@ -124,7 +127,8 @@ def ensure_sm(sm_id, prog):
 def start_new_sm(prog):
     new_sm = rp2pio.StateMachine(
         prog.assembled,
-        frequency = 25*1000,
+        frequency = 25*1000_000,    # seems like RP2040 cannot switch output to input faster.
+                                    # Maybe with second input-only pin on DD reads will be more reliable
         exclusive_pin_use = False,
 
         first_set_pin = pinDD,
@@ -171,11 +175,28 @@ def debug_init():
     # perform debug_init sequence
     for i in range(len(debug_init_compiled)):
         sm.run(debug_init_compiled[i:i+1])
+    return read_chip_id()
 
+def read_chip_id():
     # read ChipID
-    chip_id = debug_command(0x68000000)
-    chip_rev = debug_command(0)
-    return (chip_id, chip_rev)
+    (drop, chip_id) = debug_command(0x68000000)
+    (drop, chip_rev) = debug_command(0)
+
+    chip_name = "Unknown"
+    if chip_id == 0xA5:
+        chip_name = "CC2530"
+    elif chip_id == 0xB5:
+        chip_name = "CC2531"
+    elif chip_id == 0x95:
+        chip_name = "CC2533"
+    elif chip_id == 0x43:
+        chip_name = "CC2543"
+    elif chip_id == 0x44:
+        chip_name = "CC2544"
+    elif chip_id == 0x45:
+        chip_name = "CC2545"
+
+    return (chip_id, chip_name, chip_rev)
 
 
 def debug_command(cmd):
@@ -192,7 +213,7 @@ def debug_command(cmd):
             sm.restart()
             return None
     sm.readinto(buf)
-    return (buf[0] & 0xff)
+    return (buf[0] >> 8, buf[0] & 0xff)
 
 
 ensure_sm(SM_DEBUG_CMD, debug_command_prog)
