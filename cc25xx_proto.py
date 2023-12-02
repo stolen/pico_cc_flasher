@@ -16,6 +16,22 @@ pinDD  = board.GP27
 pinDC  = board.GP28
 pinRST = board.GP29
 
+# DUP registers (XDATA space address)
+DUP_DBGDATA               = 0x6260  #  Debug interface data buffer
+DUP_FCTL                  = 0x6270  #  Flash controller
+DUP_FADDRL                = 0x6271  #  Flash controller addr
+DUP_FADDRH                = 0x6272  #  Flash controller addr
+DUP_FWDATA                = 0x6273  #  Clash controller data buffer
+DUP_CLKCONSTA             = 0x709E  #  Sys clock status
+DUP_CLKCONCMD             = 0x70C6  #  Sys clock configuration
+DUP_MEMCTR                = 0x70C7  #  Flash bank xdata mapping
+DUP_DMA1CFGL              = 0x70D2  #  Low byte, DMA config ch. 1
+DUP_DMA1CFGH              = 0x70D3  #  Hi byte , DMA config ch. 1
+DUP_DMA0CFGL              = 0x70D4  #  Low byte, DMA config ch. 0
+DUP_DMA0CFGH              = 0x70D5  #  Low byte, DMA config ch. 0
+DUP_DMAARM                = 0x70D6  #  DMA arming register
+
+
 # 1) Pull RESET_N low
 # 2) Toggle two negative flanks on the DC line
 # 3) Pull RESET_N high
@@ -129,6 +145,7 @@ def start_new_sm(prog):
         prog.assembled,
         frequency = 25*1000_000,    # seems like RP2040 cannot switch output to input faster.
                                     # Maybe with second input-only pin on DD reads will be more reliable
+                                    # 25 MHz clock   --  ~8 Mbps bitrate
         exclusive_pin_use = False,
 
         first_set_pin = pinDD,
@@ -175,14 +192,29 @@ def debug_init():
     # perform debug_init sequence
     for i in range(len(debug_init_compiled)):
         sm.run(debug_init_compiled[i:i+1])
-    return read_chip_id()
+    (chip_id, chip_name, chip_rev) = read_chip_id()
+    if not chip_name:
+        print("Skipping XOSC init")
+        return (chip_id, chip_name, chip_rev)
+    write_xdata_memory(DUP_CLKCONCMD, 0x80);
+    sta = 0
+    while sta != 0x80:
+        sta = read_xdata_memory(DUP_CLKCONSTA)
+    return (chip_id, chip_name, chip_rev)
+
 
 def read_chip_id():
-    # read ChipID
-    (drop, chip_id) = debug_command(0x68000000)
-    (drop, chip_rev) = debug_command(0)
+    global sm
+    sm.clear_rxfifo()
 
-    chip_name = "Unknown"
+    buf = array("L", [0x68000000])
+    # read ChipID
+    sm.background_write(buf); sm.readinto(buf)
+    chip_id = buf[0] & 0xff
+
+    buf[0] = 0; sm.background_write(buf); sm.readinto(buf)
+    chip_rev = buf[0] & 0xff
+
     if chip_id == 0xA5:
         chip_name = "CC2530"
     elif chip_id == 0xB5:
@@ -195,6 +227,8 @@ def read_chip_id():
         chip_name = "CC2544"
     elif chip_id == 0x45:
         chip_name = "CC2545"
+    else:
+        chip_name = None
 
     return (chip_id, chip_name, chip_rev)
 
@@ -202,18 +236,50 @@ def read_chip_id():
 def debug_command(cmd):
     global sm
 
-    buf = array("L", [cmd])
+    wbuf = array("L", [cmd])
+    rbuf = array("L", [0x100])
 
     sm.clear_rxfifo()
-    sm.background_write(buf)
-    started_at = time.monotonic_ns()
-    while sm.in_waiting == 0:
-        if time.monotonic_ns() - started_at > 30_000_000_000: # 30 seconds
-            sm.clear_txstall()
-            sm.restart()
-            return None
-    sm.readinto(buf)
-    return (buf[0] >> 8, buf[0] & 0xff)
+    sm.background_write(wbuf)
+    sm.readinto(rbuf)
+
+    # repeat reads until DUP is ready before read
+    wbuf[0] = 0
+    while (rbuf[0] >> 8):
+        sm.background_write(wbuf)
+        sm.readinto(rbuf)
+    return rbuf[0] & 0xff
 
 
 ensure_sm(SM_DEBUG_CMD, debug_command_prog)
+
+
+
+def write_xdata_memory(address, value):
+    # MOV DPTR, address
+    debug_command(0x57_90_0000 | (address & 0xffff))
+    # MOV A, values[i]
+    debug_command(0x56_74_0000 | ((value & 0xff) << 8))
+    # MOV @DPTR, A
+    debug_command(0x55_F0_0000)
+
+def read_xdata_memory(address):
+    # MOV DPTR, address
+    debug_command(0x57_90_0000 | (address & 0xffff))
+    # MOVX A, @DPTR
+    return debug_command(0x55_E0_0000);
+
+
+
+def read_flash_memory_block(address, buffer):
+    # 1. Map flash memory bank to XDATA address 0x8000-0xFFFF
+    write_xdata_memory(DUP_MEMCTR, address >> 15);
+    # 2. Move data pointer to XDATA address (MOV DPTR, xdata_addr)
+    debug_command(0x57_90_0000 | 0x8000 | (address & 0x7fff))
+    for i in range(len(buffer)):
+        # 3. MOVX A, @DPTR
+        buffer[i] = debug_command(0x55_E0_0000);
+        # 4. INC DPTR
+        debug_command(0x55_A3_0000);
+ 
+
