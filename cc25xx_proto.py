@@ -4,6 +4,11 @@ from array import array
 import board
 import time
 
+# seems like RP2040 cannot sample fast enough
+# Maybe with second input-only pin on DD reads will be more reliable
+# 25 MHz clock   --  ~8 Mbps bitrate
+pio_frequency = 25_000_000
+
 SM_DEBUG_INIT   = 1
 SM_DEBUG_CMD    = 2
 
@@ -80,7 +85,6 @@ debug_init_compiled = adafruit_pioasm.assemble(debug_init_asm)
 debug_command_asm = """
 .program debug_command
 .side_set 2 opt
-.wrap_target
 next_command:
     pull                            ; wait for next command, ensure clock low
 
@@ -108,18 +112,22 @@ write_done:
     out x, 8                        ; X = 0 -> don't wait
                                     ; X = 1 -> wait ready
 
-wait_ready:                         ; drop byte until X = 0
+;wait_ready:                         ; drop byte until X = 0
     jmp !x wait_done
 
+.wrap_target
+    mov isr null                    ; ISR = 0
+    in pins, 1                      ; ISR = DD
+    mov x isr                       ; X = ISR -> X = DD
+    jmp !x wait_done
+
+wait_more:
     set y 7                         ; 
 drop_bit:
     nop                 side 3
     jmp y-- drop_bit    side 2
+.wrap
 
-    mov isr null                    ; ISR = 0
-    in pins, 1                      ; ISR = DD
-    mov x isr                       ; X = ISR -> X = DD
-    jmp wait_ready
 
 wait_done:
     out x, 8                        ; number of bytes to read
@@ -137,8 +145,6 @@ read_bit:
 
 command_done:
     push
-.wrap
-
 """
 # Tdir_change is 83 ns, ~0.1us -- may use any speed because 4 ticks are always more
 debug_command_prog = adafruit_pioasm.Program(debug_command_asm)
@@ -161,10 +167,8 @@ def ensure_sm(sm_id, prog):
 def start_new_sm(prog):
     new_sm = rp2pio.StateMachine(
         prog.assembled,
-        #frequency = 25*1000,
-        frequency = 25*1000_000,    # seems like RP2040 cannot sample fast enough
-                                    # Maybe with second input-only pin on DD reads will be more reliable
-                                    # 25 MHz clock   --  ~8 Mbps bitrate
+        frequency = pio_frequency,
+
         exclusive_pin_use = False,
 
         first_set_pin = pinDD,
@@ -219,6 +223,7 @@ def debug_init():
     sta = 0
     while sta != 0x80:
         sta = read_xdata_memory(DUP_CLKCONSTA)
+        print("clock status %02X" % sta)
     return (chip_id, chip_name, chip_rev)
 
 
@@ -341,31 +346,23 @@ def prepare_for_writing():
     debug_command(0x19_22_0000)         # enable DMA: CMD_WR_CONFIG 0x22
 
 
-#**************************************************************************//**
-# @brief    Writes 4-2048 bytes to DUP's flash memory.
-#
-# @param    address     FLASH memory start address [0x0000 - 0x7FFF]
-# @param    buffer      source buffer
-#*****************************************************************************/
 def write_flash_memory_block(address, buffer):
+    buflen = len(buffer)
     # 1. Write the 2 DMA descriptors to RAM
     dma_desc_0 = bytes([
         HIBYTE(DUP_DBGDATA), LOBYTE(DUP_DBGDATA),
         HIBYTE(ADDR_BUF0),   LOBYTE(ADDR_BUF0),
-        0, 0, 31, 0x11 ])
+        HIBYTE(buflen),      LOBYTE(buflen),
+        0x1f, 0x11 ])
     dma_desc_1 = bytes([
         HIBYTE(ADDR_BUF0),   LOBYTE(ADDR_BUF0),
         HIBYTE(DUP_FWDATA),  LOBYTE(DUP_FWDATA),
-        0, 0, 18, 0x42 ])
+        HIBYTE(buflen),      LOBYTE(buflen),
+        0x12, 0x42 ])
 
     write_xdata_memory_block(ADDR_DMA_DESC_0, dma_desc_0);
     write_xdata_memory_block(ADDR_DMA_DESC_1, dma_desc_1);
 
-    # 2. Update LEN value in DUP's DMA descriptors
-    buflen = len(buffer)
-    buflen = [LOBYTE(buflen), HIBYTE(buflen)]
-    write_xdata_memory_block((ADDR_DMA_DESC_0+4), buflen)   # LEN, DBG => ram
-    write_xdata_memory_block((ADDR_DMA_DESC_1+4), buflen)   # LEN, ram => flash
 
     # 3. Set DMA controller pointer to the DMA descriptors
     write_xdata_memory(DUP_DMA0CFGH, HIBYTE(ADDR_DMA_DESC_0))
