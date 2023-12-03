@@ -6,15 +6,19 @@
 
 ## Installation
 <img src="pictures/overview.jpg" width="20%"> <img src="pictures/closeup.jpg" width="30%"> <img src="pictures/stick_pinout.png" width="35%">
-  * Grab any RP2040 board with Neopixel (for indication)
+  * Grab any RP2040 board
   * Connect some pins to your CC2531 stick
     * `GND   ->    GND`
     * `GP27  ->    DD`
     * `GP28  ->    DC`
     * `GP29  ->   nRST`
-  * Install [CircuitPython](https://circuitpython.org/downloads)
-  * Copy all `*.py` files from this repo to your RP2040
-  * Restart RP2040
+  * Automated installation
+    * Connect your RP2040 board in bootloader mode to your PC
+    * run `make install`
+  * Manual installation
+    * Install [CircuitPython](https://circuitpython.org/downloads)
+    * Copy all `*.py` files from this repo to your RP2040 (don't forget about `lib/adafruit_pioasm.py`)
+  * RP2040 will restart automatically
 
 ## Usage
 <img src="pictures/shell_demo.png" width="40%"> <img src="pictures/filemanager.jpg" width="40%">
