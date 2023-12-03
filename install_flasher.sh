@@ -46,7 +46,7 @@ LIB_DIR=$MOUNTPOINT/lib
 for src in cc25xx_*.py hex_reader.py lib/*.py; do
     install_py $src $LIB_DIR
 done
-for script in code.py boot.py; do
+for script in code.py boot.py README.TXT; do
     cp -v $script $MOUNTPOINT/
 done
 
