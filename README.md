@@ -17,7 +17,8 @@
     * run `make install`
   * Manual installation
     * Install [CircuitPython](https://circuitpython.org/downloads)
-    * Copy all `*.py` files from this repo to your RP2040 (don't forget about `lib/adafruit_pioasm.py`)
+    * Unzip [release zip](https://github.com/stolen/pico_cc_flasher/releases/latest/download/pico_cc_flasher.zip) into a CircuitPython USB drive
+    * _(Alternate to unzipping)_ Copy all `*.py` files from this repo to your RP2040 (don't forget about `lib/adafruit_pioasm.py`)
   * RP2040 will restart automatically
 
 ## Usage
