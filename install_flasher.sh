@@ -30,7 +30,7 @@ fi
 
 function install_py {
     src=$1
-    dst=$MOUNTPOINT/lib/$(basename $src)
+    dst=$2/$(basename $src)
     if [[ $COMPILE == y ]]; then
         dst=${dst%.py}.mpy
         echo "compile-install $src -> $dst"
@@ -41,8 +41,10 @@ function install_py {
     fi
 }
 
+LIB_DIR=$MOUNTPOINT/lib
+[ -d $LIB_DIR ] || mkdir $LIB_DIR
 for src in cc25xx_*.py lib/*.py; do
-    install_py $src
+    install_py $src $LIB_DIR
 done
 for script in code.py boot.py; do
     cp -v $script $MOUNTPOINT/
