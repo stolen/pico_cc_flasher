@@ -9,17 +9,15 @@ import time
 # 25 MHz clock   --  ~8 Mbps bitrate
 pio_frequency = 25_000_000
 
-SM_DEBUG_INIT   = 1
-SM_DEBUG_CMD    = 2
-
-sm = None
-loaded_sm = None
-debug_inited = False
-
 pinDD  = board.GP27
 # DC and RST must be consecutive because they are set by pio side-set
 pinDC  = board.GP28
 pinRST = board.GP29
+
+
+
+sm = None
+loaded_sm = None
 
 ADDR_BUF0                 = 0x0000 # Buffer (512 bytes)
 ADDR_DMA_DESC_0           = 0x0200 # DMA descriptors (8 bytes)
@@ -91,15 +89,15 @@ next_command:
     out x, 16          side 2       ; number of bytes to write
     mov isr osr                     ; keep read commands safe
 
-    jmp x-- write_data     
-    jmp write_done           
+    jmp x-- write_data
+    jmp write_done
 
 write_data:
     set pindirs 1       side 2      ; DD output
     pull                            ; payload is in following words
 write_byte:
-    pull ifempty      
-    set y 7                         ; 
+    pull ifempty
+    set y 7                         ;
 write_bit:
     out pins, 1         side 3      ; set data bit, clock high
     jmp y-- write_bit   side 2      ; clock low
@@ -122,7 +120,7 @@ write_done:
     jmp !x wait_done
 
 wait_more:
-    set y 7                         ; 
+    set y 7                         ;
 drop_bit:
     nop                 side 3
     jmp y-- drop_bit    side 2
@@ -139,7 +137,7 @@ read_byte:
 read_bit:
     nop                 side 3 [2]  ; DUP sets bit at rising clock edge, let it settle
     in pins, 1          side 2      ; read at falling clock edge
-    jmp y-- read_bit 
+    jmp y-- read_bit
 
     jmp x-- read_byte
 
@@ -268,7 +266,7 @@ def debug_command(cmd):
     return buf[0] & 0xff
 
 
-ensure_sm(SM_DEBUG_CMD, debug_command_prog)
+ensure_sm(0, debug_command_prog)
 
 
 
@@ -331,7 +329,7 @@ def read_flash_memory_block(address, buffer):
         buffer[i] = debug_command(0x55_E0_0000)
         # 4. INC DPTR
         debug_command(0x55_A3_0000)
- 
+
 
 def prepare_for_writing():
     print("status before erase", end='  ');  print("%02X" % (debug_command(0x30_000000)) )
