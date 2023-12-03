@@ -1,6 +1,7 @@
 import storage
 import neopixel_write, digitalio, board
 import re, time, microcontroller
+from hex_reader import HexReader
 
 FS = storage.getmount("/")
 
@@ -36,11 +37,11 @@ def need_read():
             return False
 
 def image_to_write_from():
-    regex = re.compile(".*\.bin$")
+    regex = re.compile(".*\.(bin|hex)$")
     for (f, _,_,_) in FS.ilistdir(workdir):
         if f == read_image_basename:
             continue
-        if regex.match(f):
+        if regex.match(f.lower()):
             return workdir + "/" + f
     return False
 
@@ -99,8 +100,13 @@ def write_flash(blocksize = 512):
     image = image_to_write_from()
     if not image:
         return False
-    with FS.open(image, "r") as d:
-        result = write_flash_from_filedesc(d, blocksize=blocksize)
+    if re.match(".*\.bin$", image.lower()):
+        with FS.open(image, "r") as d:
+            result = write_flash_from_filedesc(d, blocksize=blocksize)
+    elif re.match(".*\.hex$", image.lower()):
+        reader = HexReader(image)
+        result = write_flash_from_filedesc(reader, blocksize=blocksize)
+
     if result:
         FS.remove(image)
     return result
@@ -128,7 +134,14 @@ def write_flash_from_filedesc(f, blocksize = 512):
     nblocks = 256*1024 // blocksize
     rangediv = nblocks // 64
     for i in range(nblocks):
-        f.readinto(buf)
+        readsz = f.readinto(buf)
+        if not readsz:
+            print("\nInput exausted")
+            break
+        if readsz < blocksize:
+            # Pad missing part
+            for i in range(readsz, blocksize):
+                buf[i] = 0xff
         cc25xx_proto.write_flash_memory_block(i*blocksize, buf)
         neopixel_write.neopixel_write(pin, bytearray([10+i%2*6, 5+(i+1)%2*6, 5+(i+1)%2*6]))
         if (i+1) % rangediv == 0:

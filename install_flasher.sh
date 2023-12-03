@@ -43,7 +43,7 @@ function install_py {
 
 LIB_DIR=$MOUNTPOINT/lib
 [ -d $LIB_DIR ] || mkdir $LIB_DIR
-for src in cc25xx_*.py lib/*.py; do
+for src in cc25xx_*.py hex_reader.py lib/*.py; do
     install_py $src $LIB_DIR
 done
 for script in code.py boot.py; do

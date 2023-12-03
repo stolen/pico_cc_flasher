@@ -3,6 +3,7 @@
   * No need for software on your PC
   * Works in any OS
   * Easy to use -- just drop new firmware to the USB storage
+  * Supports both `*.hex` and `*.bin` for flashing
 
 ## Installation
 <img src="pictures/overview.jpg" width="20%"> <img src="pictures/closeup.jpg" width="30%"> <img src="pictures/stick_pinout.png" width="35%">
@@ -28,7 +29,7 @@
   * On the USB drive open directory `cc25xx`
   * `data.read.bin` is the flash dump
   * Remove `control.skip_flash_read` to re-read flash
-  * Drop any `*.bin` file (except `data.read.bin`) to this directory to flash it
+  * Drop any `*.bin` or `*.hex` file (except `data.read.bin`) to this directory to flash it
   * Open USB TTY to see operation progress and some logs
 
 ## How it works
@@ -42,7 +43,6 @@
 
 ## TODO (PRs welcome)
   * Discover way to indicate activity -- LED, NEOPIXEL or just no indication
-  * Accept `.hex` files (no need for conversion)
   * Support for chips other than CC2530/CC2531 (flash size, etc.)
   * Erase only affected flash blocks like [CCLib for Arduino](https://github.com/wavesoft/CCLib/blob/13ebd0878a8a691d1336b96609eb44d535021964/Python/cclib/chip/cc254x.py#L570) does
   * DMA read for better speed (if possible at all)
