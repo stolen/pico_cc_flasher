@@ -3,16 +3,17 @@ import adafruit_pioasm
 from array import array
 import board
 import time
+import cc25xx_config
 
 # seems like RP2040 cannot sample fast enough
 # Maybe with second input-only pin on DD reads will be more reliable
 # 25 MHz clock   --  ~8 Mbps bitrate
-pio_frequency = 25_000_000
+pio_frequency = cc25xx_config.PIO_FREQUENCY
 
-pinDD  = board.GP27
+pinDD  = cc25xx_config.PIN_DD
 # DC and RST must be consecutive because they are set by pio side-set
-pinDC  = board.GP28
-pinRST = board.GP29
+pinDC  = cc25xx_config.PIN_DC
+pinRST = cc25xx_config.PIN_RST
 
 
 
