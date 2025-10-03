@@ -1,6 +1,7 @@
 import storage
 import neopixel_write, digitalio, board
 import re, time, microcontroller
+import cc25xx_config
 from hex_reader import HexReader
 
 FS = storage.getmount("/")
@@ -63,6 +64,14 @@ def read_flash():
     else:
         time.sleep(5)
 
+
+def neopixel_set(rgb):
+    if cc25xx_config.PIN_NEOPIXEL:
+        pin = digitalio.DigitalInOut(cc25xx_config.PIN_NEOPIXEL)
+        pin.direction = digitalio.Direction.OUTPUT
+        neopixel_write.neopixel_write(pin, bytearray(rgb))
+
+
 def read_flash_to_filedesc(f):
     import cc25xx_proto
     # Flash size of CC2531 is 256K
@@ -71,26 +80,23 @@ def read_flash_to_filedesc(f):
     blocksize = 2*1024
     buf = bytearray(blocksize)
 
-    pin = digitalio.DigitalInOut(board.NEOPIXEL)
-    pin.direction = digitalio.Direction.OUTPUT
-
-    neopixel_write.neopixel_write(pin, bytearray([10,20,10]))
+    neopixel_set([10,20,10])
     (chip_id, chip_name, chip_rev) = cc25xx_proto.debug_init()
     if not chip_name:
-        neopixel_write.neopixel_write(pin, bytearray([20,0,0]))
+        neopixel_set([20,0,0])
         return False
 
-    neopixel_write.neopixel_write(pin, bytearray([0,0,0]))
+    neopixel_set([0,0,0])
 
     nblocks = 256*1024 // blocksize
     for i in range(nblocks):
         cc25xx_proto.read_flash_memory_block(i*blocksize, buf)
         f.write(buf)
-        neopixel_write.neopixel_write(pin, bytearray([10+i%2*6, 10+(i+1)%2*6, 0]))
+        neopixel_set([10+i%2*6, 10+(i+1)%2*6, 0])
         if i % 2 == 1:
             print("\rRead flash: [", "="*(i//2), " "*((nblocks-i)//2), "]", sep='', end='')
 
-    neopixel_write.neopixel_write(pin, bytearray([0,20,0]))
+    neopixel_set([0,20,0])
     print("")
     return True
 
@@ -119,17 +125,14 @@ def write_flash_from_filedesc(f, blocksize = 512):
     #blocksize = 64
     buf = bytearray(blocksize)
 
-    pin = digitalio.DigitalInOut(board.NEOPIXEL)
-    pin.direction = digitalio.Direction.OUTPUT
-
-    neopixel_write.neopixel_write(pin, bytearray([10,20,10]))
+    neopixel_set([10,20,10])
     (chip_id, chip_name, chip_rev) = cc25xx_proto.debug_init()
     if not chip_name:
-        neopixel_write.neopixel_write(pin, bytearray([20,0,0]))
+        neopixel_set([20,0,0])
         return False
     cc25xx_proto.prepare_for_writing()
 
-    neopixel_write.neopixel_write(pin, bytearray([0,0,0]))
+    neopixel_set([0,0,0])
 
     nblocks = 256*1024 // blocksize
     rangediv = nblocks // 64
@@ -143,10 +146,10 @@ def write_flash_from_filedesc(f, blocksize = 512):
             for i in range(readsz, blocksize):
                 buf[i] = 0xff
         cc25xx_proto.write_flash_memory_block(i*blocksize, buf)
-        neopixel_write.neopixel_write(pin, bytearray([10+i%2*6, 5+(i+1)%2*6, 5+(i+1)%2*6]))
+        neopixel_set([10+i%2*6, 5+(i+1)%2*6, 5+(i+1)%2*6])
         if (i+1) % rangediv == 0:
             print("\rWrite flash: [", "="*(i//rangediv), " "*((nblocks-i)//rangediv), "]", sep='', end='')
 
-    neopixel_write.neopixel_write(pin, bytearray([0,20,0]))
+    neopixel_set([0,20,0])
     print("")
     return True
