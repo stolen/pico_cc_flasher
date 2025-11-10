@@ -1,8 +1,8 @@
-[!NOTE]
-I (temporarily) lost my interest in CC chips, so
-* I may be very slow to respond
-* I will not implement anything as I dont't have hardware nearby
-* maintainers wanted
+> [!NOTE]
+> I lost my interest in CC chips, so
+> * I may be very slow to respond
+> * I will not implement anything as I dont't have hardware nearby
+> * maintainers wanted
 
 # Standalone CC25xx firmware flasher
 ## Features
