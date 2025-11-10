@@ -37,12 +37,10 @@
   * Higher-level code is written in Python
 
 ## Customizing
-  * You may want to remove or isolate `neopixel` calls from `cc25xx_ui.py` if your board does not support it
   * Change pins in `cc25xx_proto.py` -- look for `pinDD`, `pinDC`, `pinRST` vars near the top
   * If reading or writing catches some errors or hangs, try chhosing a lower `pio_frequency` in `cc25xx_proto.py`
 
 ## TODO (PRs welcome)
-  * Discover way to indicate activity -- LED, NEOPIXEL or just no indication
   * Support for chips other than CC2530/CC2531 (flash size, etc.)
   * Erase only affected flash blocks like [CCLib for Arduino](https://github.com/wavesoft/CCLib/blob/13ebd0878a8a691d1336b96609eb44d535021964/Python/cclib/chip/cc254x.py#L570) does
   * DMA read for better speed (if possible at all)

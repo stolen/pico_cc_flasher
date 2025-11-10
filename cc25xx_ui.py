@@ -1,5 +1,4 @@
 import storage
-import neopixel_write, digitalio, board
 import re, time, microcontroller
 from hex_reader import HexReader
 
@@ -9,6 +8,52 @@ workdir    = "/cc25xx"
 read_lock  = workdir + "/control.skip_flash_read"
 read_image_basename = "data.read.bin"
 read_image = workdir + "/" + read_image_basename
+
+# Status indicator (auto-detects NeoPixel or single LED)
+class _Indicator:
+    def __init__(self):
+        self.pin = None
+        self.is_neopixel = False
+        self._init()
+    
+    def _init(self):
+        try:
+            # Try NeoPixel first
+            import neopixel_write, digitalio, board
+            self.pin = digitalio.DigitalInOut(board.NEOPIXEL)
+            self.pin.direction = digitalio.Direction.OUTPUT
+            self.neopixel_write = neopixel_write.neopixel_write
+            self.is_neopixel = True
+        except:
+            try:
+                # Fallback to PWM LED for brightness control
+                import pwmio, board
+                self.pin = pwmio.PWMOut(board.LED, frequency=1000, duty_cycle=0)
+            except:
+                pass  # No indicator available
+    
+    def set(self, r, g, b):
+        """Set status (color for NeoPixel, brightness for LED)"""
+        if not self.pin:
+            return
+        if self.is_neopixel:
+            self.neopixel_write(self.pin, bytearray([r, g, b]))
+        else:
+            # Use average of RGB as brightness (0-255 -> 0-65535)
+            brightness = ((r + g + b) // 3) * 257
+            self.pin.duty_cycle = brightness
+
+    def blink(self, r, g, b, times=3, delay=0.2):
+        """Blink status (color for NeoPixel, brightness for LED)"""
+        if not self.pin:
+            return
+        for _ in range(times):
+            self.set(r, g, b)
+            time.sleep(delay)
+            self.set(0, 0, 0)
+            time.sleep(delay)
+
+status_led = _Indicator()
 
 # Helper for cases where something is screwed up
 def safe_mode():
@@ -71,26 +116,25 @@ def read_flash_to_filedesc(f):
     blocksize = 2*1024
     buf = bytearray(blocksize)
 
-    pin = digitalio.DigitalInOut(board.NEOPIXEL)
-    pin.direction = digitalio.Direction.OUTPUT
+    status_led.blink(10, 20, 10, 2)  # Cyan: initializing
 
-    neopixel_write.neopixel_write(pin, bytearray([10,20,10]))
     (chip_id, chip_name, chip_rev) = cc25xx_proto.debug_init()
     if not chip_name:
-        neopixel_write.neopixel_write(pin, bytearray([20,0,0]))
+        status_led.blink(20, 0, 0, 3, 0.5)  # Red: error
         return False
 
-    neopixel_write.neopixel_write(pin, bytearray([0,0,0]))
+    status_led.set(0, 0, 0)  # Off: starting
 
     nblocks = 256*1024 // blocksize
     for i in range(nblocks):
         cc25xx_proto.read_flash_memory_block(i*blocksize, buf)
         f.write(buf)
-        neopixel_write.neopixel_write(pin, bytearray([10+i%2*6, 10+(i+1)%2*6, 0]))
+        # Blinking yellow while reading
+        status_led.set(10 + i%2*6, 10 + (i+1)%2*6, 0)
         if i % 2 == 1:
             print("\rRead flash: [", "="*(i//2), " "*((nblocks-i)//2), "]", sep='', end='')
 
-    neopixel_write.neopixel_write(pin, bytearray([0,20,0]))
+    status_led.set(0, 20, 0, 5)  # Green: success
     print("")
     return True
 
@@ -119,17 +163,14 @@ def write_flash_from_filedesc(f, blocksize = 512):
     #blocksize = 64
     buf = bytearray(blocksize)
 
-    pin = digitalio.DigitalInOut(board.NEOPIXEL)
-    pin.direction = digitalio.Direction.OUTPUT
-
-    neopixel_write.neopixel_write(pin, bytearray([10,20,10]))
+    status_led.blink(10, 20, 10, 2)  # Cyan: initializing
     (chip_id, chip_name, chip_rev) = cc25xx_proto.debug_init()
     if not chip_name:
-        neopixel_write.neopixel_write(pin, bytearray([20,0,0]))
+        status_led.blink(20, 0, 0, 3, 0.5)  # Red: error
         return False
     cc25xx_proto.prepare_for_writing()
 
-    neopixel_write.neopixel_write(pin, bytearray([0,0,0]))
+    status_led.set(0, 0, 0)  # Off: starting
 
     nblocks = 256*1024 // blocksize
     rangediv = nblocks // 64
@@ -143,10 +184,11 @@ def write_flash_from_filedesc(f, blocksize = 512):
             for i in range(readsz, blocksize):
                 buf[i] = 0xff
         cc25xx_proto.write_flash_memory_block(i*blocksize, buf)
-        neopixel_write.neopixel_write(pin, bytearray([10+i%2*6, 5+(i+1)%2*6, 5+(i+1)%2*6]))
+        # Blinking yellow/pink while writing
+        status_led.set(10 + i%2*6, 5 + (i+1)%2*6, 5 + (i+1)%2*6)
         if (i+1) % rangediv == 0:
             print("\rWrite flash: [", "="*(i//rangediv), " "*((nblocks-i)//rangediv), "]", sep='', end='')
 
-    neopixel_write.neopixel_write(pin, bytearray([0,20,0]))
+    status_led.blink(0, 20, 0, 5)  # Green: success
     print("")
     return True
